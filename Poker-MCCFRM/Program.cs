@@ -62,73 +62,103 @@ namespace Poker_MCCFRM
         {
             Console.WriteLine("Starting Discounted Counterfactual Regret Minimization (DCFR)...");
 
-            long StrategyInterval = Math.Max(1, 1000 / Global.NOF_THREADS);
-            long StrategyDiscountInterval = 10000 / Global.NOF_THREADS; // Discount strategies every 10k iterations
-            long SaveToDiskInterval = 1000000 / Global.NOF_THREADS;
-            long testGamesInterval = 100000 / Global.NOF_THREADS;
+            long StrategyInterval = 1000;
+            long StrategyDiscountInterval = 10000;
+            long SaveToDiskInterval = 1000000;
+            long testGamesInterval = 100000;
 
-            long sharedLoopCounter = 0;
+            long globalIteration = 0;
+            object lockObj = new object();
+            bool running = true;
 
             LoadFromFile();
 
-            Trainer trainer = new Trainer(0);
-            trainer.EnumerateActionSpace();
+            Trainer mainTrainer = new Trainer(0);
+            mainTrainer.EnumerateActionSpace();
 
             Stopwatch stopwatch = new Stopwatch();
             stopwatch.Start();
+
+            // Create worker tasks
+            var tasks = new Task[Global.NOF_THREADS];
             
-            Parallel.For(0, Global.NOF_THREADS,
-                index =>
+            for (int threadIdx = 0; threadIdx < Global.NOF_THREADS; threadIdx++)
+            {
+                int index = threadIdx; // Capture for closure
+                tasks[index] = Task.Run(() =>
                 {
                     Trainer trainer = new Trainer(index);
-
-                    for (int t = 1; ; t++)
+                    
+                    while (running)
                     {
-                        if (t % 1000 == 0)
-                        {
-                            Interlocked.Add(ref sharedLoopCounter, 1000);
-                            Console.WriteLine("Training steps " + sharedLoopCounter);
-                        }
-
-                        if (t % testGamesInterval == 0 && index == 0)
-                        {
-                            trainer.PrintStartingHandsChart();
-                            trainer.PrintStatistics(sharedLoopCounter);
-
-                            Console.WriteLine("Sample games (against self)");
-                            for (int z = 0; z < 20; z++)
-                            {
-                                trainer.PlayOneGame();
-                            }
-
-                            Console.WriteLine("Iterations per second: {0}", 1000 * sharedLoopCounter / (stopwatch.ElapsedMilliseconds + 1));
-                            Console.WriteLine();
-                        }
+                        long currentIteration = Interlocked.Increment(ref globalIteration);
                         
+                        // Each thread does CFR traversals
                         for (int traverser = 0; traverser < Global.nofPlayers; traverser++)
                         {
-                            if (t % StrategyInterval == 0 && index == 0)
-                            {
-                                trainer.UpdateStrategy(traverser);
-                            }
-                            
-                            // Use Discounted CFR traversal
-                            trainer.TraverseDiscountedCFR(traverser, t);
-                        }
-                        
-                        // Apply strategy discounting periodically
-                        if (t % StrategyDiscountInterval == 0 && index == 0)
-                        {
-                            trainer.DiscountInfosetsStrategies(t);
-                        }
-                        
-                        if (t % SaveToDiskInterval == 0 && index == 0)
-                        {
-                            Console.WriteLine("Saving nodeMap to disk disabled!");
-                            SaveToFile();
+                            trainer.TraverseDiscountedCFR(traverser, (int)currentIteration);
                         }
                     }
                 });
+            }
+
+            // Main monitoring/maintenance task
+            Task maintenanceTask = Task.Run(() =>
+            {
+                while (running)
+                {
+                    long currentIteration = Interlocked.Read(ref globalIteration);
+                    
+                    // Progress reporting
+                    if (currentIteration % 1000 == 0)
+                    {
+                        Console.WriteLine("Training steps " + currentIteration);
+                    }
+
+                    // Statistics and game display
+                    if (currentIteration % testGamesInterval == 0)
+                    {
+                        mainTrainer.PrintStartingHandsChart();
+                        mainTrainer.PrintStatistics(currentIteration);
+
+                        Console.WriteLine("Sample games (against self)");
+                        for (int z = 0; z < 20; z++)
+                        {
+                            mainTrainer.PlayOneGame();
+                        }
+
+                        Console.WriteLine("Iterations per second: {0}", 
+                            1000 * currentIteration / (stopwatch.ElapsedMilliseconds + 1));
+                        Console.WriteLine();
+                    }
+                    
+                    // Strategy updates
+                    if (currentIteration % StrategyInterval == 0)
+                    {
+                        for (int traverser = 0; traverser < Global.nofPlayers; traverser++)
+                        {
+                            mainTrainer.UpdateStrategy(traverser);
+                        }
+                    }
+                    
+                    // Apply strategy discounting
+                    if (currentIteration % StrategyDiscountInterval == 0)
+                    {
+                        mainTrainer.DiscountInfosetsStrategies((int)currentIteration);
+                    }
+                    
+                    // Save to disk
+                    if (currentIteration % SaveToDiskInterval == 0)
+                    {
+                        Console.WriteLine("Saving nodeMap to disk...");
+                        SaveToFile();
+                    }
+                    
+                    Thread.Sleep(10); // Prevent tight loop
+                }
+            });
+
+            Task.WaitAll(tasks);
         }
         
         private static void WritePlotStatistics(float bbWins)
