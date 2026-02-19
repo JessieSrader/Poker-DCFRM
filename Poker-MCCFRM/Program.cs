@@ -1,5 +1,6 @@
-﻿    using System;
+﻿using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.Serialization.Formatters.Binary;
@@ -17,7 +18,14 @@ namespace Poker_MCCFRM
             CreateIndexers();
             Global.handEvaluator = new Evaluator();
             CalculateInformationAbstraction();
+            
+            // Initialize FASTER
+            Global.InitializeFaster();
+            
             TrainDiscountedCFR();
+            
+            // Cleanup
+            Global.nodeStore?.Dispose();
         }
 
         private static void CreateIndexers()
@@ -154,6 +162,33 @@ namespace Poker_MCCFRM
                         SaveToFile();
                     }
                     
+                    // Prune low-regret nodes
+                    if (currentIteration % (StrategyDiscountInterval * 10) == 0)
+                    {
+                        Console.WriteLine("Pruning low-regret nodes...");
+                        var keysToRemove = new List<string>();
+                        
+                        foreach (var pair in Global.nodeMap)
+                        {
+                            bool allNegative = true;
+                            foreach (var r in pair.Value.regret)
+                            {
+                                if (r > 0)
+                                {
+                                    allNegative = false;
+                                    break;
+                                }
+                            }
+                            if (allNegative)
+                                keysToRemove.Add(pair.Key);
+                        }
+                        
+                        foreach (var key in keysToRemove)
+                            Global.nodeMap.TryRemove(key, out _);
+                        
+                        Console.WriteLine($"Removed {keysToRemove.Count} nodes");
+                    }
+                    
                     Thread.Sleep(10); // Prevent tight loop
                 }
             });
@@ -171,59 +206,18 @@ namespace Poker_MCCFRM
         
         private static void SaveToFile()
         {
-            Console.WriteLine("Saving dictionary to file {0}", "nodeMap.txt");
-
-            using FileStream fs = File.OpenWrite("nodeMap.txt");
-            using BinaryWriter writer = new BinaryWriter(fs);
-            foreach (var pair in Global.nodeMap)
-            {
-                byte[] bytes = Encoding.ASCII.GetBytes(pair.Key);
-
-                writer.Write(bytes.Length);
-                writer.Write(bytes);
-
-                writer.Write(pair.Value.actionCounter.Length);
-                for (int i = 0; i < pair.Value.actionCounter.Length; i++)
-                    writer.Write(pair.Value.actionCounter[i]);
-
-                for (int i = 0; i < pair.Value.regret.Length; i++)
-                    writer.Write(pair.Value.regret[i]);
-            }
+            Console.WriteLine("Taking FASTER checkpoint...");
+            Global.nodeStore.TakeCheckpoint();
+            Console.WriteLine("Checkpoint complete");
         }
         
         private static void LoadFromFile()
         {
-            if (!File.Exists("nodeMap.txt"))
-                return;
-            Console.WriteLine("Loading nodes from file nodeMap.txt...");
-            using FileStream fs = File.OpenRead("nodeMap.txt");
-            using BinaryReader reader = new BinaryReader(fs);
-            Global.nodeMap = new ConcurrentDictionary<string, Infoset>();
-
-            try
+            if (Directory.Exists("checkpoints"))
             {
-                while (true)
-                {
-                    int keyLength = reader.ReadInt32();
-                    byte[] key = reader.ReadBytes(keyLength);
-                    string keyString = Encoding.ASCII.GetString(key);
-                    int valueLength = reader.ReadInt32();
-
-                    Infoset infoset = new Infoset(valueLength);
-                    for (int i = 0; i < valueLength; i++)
-                    {
-                        infoset.actionCounter[i] = reader.ReadInt32();
-                    }
-                    for (int i = 0; i < valueLength; i++)
-                    {
-                        infoset.regret[i] = reader.ReadInt32();
-                    }
-                    Global.nodeMap.TryAdd(keyString, infoset);
-                }
-            }
-            catch (EndOfStreamException e)
-            {
-                return;
+                Console.WriteLine("Recovering from FASTER checkpoint...");
+                Global.nodeStore.Recover();
+                Console.WriteLine("Recovery complete");
             }
         }
         

@@ -5,9 +5,11 @@ namespace Poker_MCCFRM
     [Serializable]
     public class Infoset
     {
-        public float[] regret;
-        public float[] actionCounter;
-
+        public short[] regret;  // Instead of float[]
+        public short[] actionCounter;  // Instead of float[]
+        
+        private const float SCALE = 100f;  // Scale factor for precision
+        
         public Infoset()
         {
         }
@@ -16,8 +18,8 @@ namespace Poker_MCCFRM
             if (actions != 0)
             {
                 // chance node
-                regret = new float[actions];
-                actionCounter = new float[actions];
+                regret = new short[actions];
+                actionCounter = new short[actions];
             }
         }
         public float[] CalculateStrategy()
@@ -26,18 +28,14 @@ namespace Poker_MCCFRM
             float[] moveProbs = new float[regret.Length];
             for (int a = 0; a < regret.Length; ++a)
             {
-                sum += Math.Max(0, regret[a]);
+                sum += Math.Max(0, regret[a] / SCALE);
             }
             for (int a = 0; a < regret.Length; ++a)
             {
                 if (sum > 0)
-                {
-                    moveProbs[a] = Math.Max(0, regret[a]) / sum;
-                }
+                    moveProbs[a] = Math.Max(0, regret[a] / SCALE) / sum;
                 else
-                {
                     moveProbs[a] = 1.0f / regret.Length;
-                }
             }
             return moveProbs;
         }
