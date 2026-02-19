@@ -17,6 +17,7 @@ namespace Poker_MCCFRM
             rootState = new ChanceState();
             this.threadIndex = threadIndex;
         }
+        
         /// <summary>
         /// Reset game state to save resources
         /// </summary>
@@ -24,6 +25,7 @@ namespace Poker_MCCFRM
         {
             rootState = new ChanceState();
         }
+        
         /// <summary>
         /// Recursively update the strategy for the tree of player
         /// </summary>
@@ -58,6 +60,7 @@ namespace Poker_MCCFRM
                 }
             }
         }
+        
         public void UpdateStrategy(int traverser)
         {
             ResetGame();
@@ -67,37 +70,148 @@ namespace Poker_MCCFRM
             }
             UpdateStrategy(rootState, traverser);
         }
+        
+        /// <summary>
+        /// Discounted CFR traversal
+        /// </summary>
+        public float TraverseDiscountedCFR(int traverser, int iteration)
+        {
+            ResetGame();
+            return TraverseDiscountedCFR(rootState, traverser, iteration);
+        }
+
+        private float TraverseDiscountedCFR(State gs, int traverser, int iteration)
+        {
+            if (gs is TerminalState)
+            {
+                return gs.GetReward(traverser);
+            }
+            else if (!gs.IsPlayerInHand(traverser))
+            {
+                return -gs.bets[traverser];
+            }
+            else if (gs is ChanceState)
+            {
+                return TraverseDiscountedCFR(gs.DoRandomAction(), traverser, iteration);
+            }
+            else if (gs.IsPlayerTurn(traverser))
+            {
+                Infoset infoset = gs.GetInfoset();
+                float[] sigma = infoset.CalculateStrategy();
+                float expectedVal = 0.0f;
+
+                gs.CreateChildren();
+                List<float> expectedValsChildren = new List<float>();
+                for (int i = 0; i < gs.children.Count; ++i)
+                {
+                    expectedValsChildren.Add(TraverseDiscountedCFR(gs.children[i], traverser, iteration));
+                    expectedVal += sigma[i] * expectedValsChildren.Last();
+                }
+                
+                // Apply discounted regret updates
+                for (int i = 0; i < gs.children.Count; ++i)
+                {
+                    float instantRegret = expectedValsChildren[i] - expectedVal;
+                    
+                    // Apply discount factor based on sign and iteration
+                    if (iteration > Global.T_DISCOUNT)
+                    {
+                        float discount = GetRegretDiscount(iteration, instantRegret);
+                        infoset.regret[i] = discount * infoset.regret[i] + instantRegret;
+                    }
+                    else
+                    {
+                        infoset.regret[i] += instantRegret;
+                    }
+                    
+                    infoset.regret[i] = Math.Max(Global.regretFloor, infoset.regret[i]);
+                }
+                
+                return expectedVal;
+            }
+            else
+            {
+                Infoset infoset = gs.GetInfoset();
+                float[] sigma = infoset.CalculateStrategy();
+
+                int randomIndex = Util.SampleDistribution(sigma);
+                gs.CreateChildren();
+
+                return TraverseDiscountedCFR(gs.children[randomIndex], traverser, iteration);
+            }
+        }
+
+        /// <summary>
+        /// Calculate discount factor for regret based on iteration and regret sign
+        /// </summary>
+        private float GetRegretDiscount(int iteration, float regret)
+        {
+            float t = iteration;
+            float discount;
+            
+            if (regret > 0)
+            {
+                // Positive regrets: (t / (t + 1))^alpha
+                discount = (float)Math.Pow(t / (t + 1.0), Global.ALPHA);
+            }
+            else
+            {
+                // Negative regrets: (t / (t + 1))^beta
+                discount = (float)Math.Pow(t / (t + 1.0), Global.BETA);
+            }
+            
+            return discount;
+        }
+
+        /// <summary>
+        /// Apply discounting to all infosets - used for strategy averaging
+        /// </summary>
+        internal void DiscountInfosetsStrategies(int iteration)
+        {
+            if (iteration <= Global.T_DISCOUNT) return;
+            
+            float t = iteration;
+            float discount = (float)Math.Pow(t / (t + 1.0), Global.GAMMA);
+            
+            foreach (Infoset infoset in Global.nodeMap.Values)
+            {
+                for (int i = 0; i < infoset.actionCounter.Length; ++i)
+                {
+                    infoset.actionCounter[i] *= discount;
+                }
+            }
+        }
+
         public float TraverseMCCFRPruned(int traverser)
         {
             ResetGame();
             return TraverseMCCFRPruned(rootState, traverser);
         }
+        
         public float TraverseMCCFR(int traverser, int iteration)
         {
             ResetGame();
             return TraverseMCCFR(rootState, traverser, iteration);
         }
+        
         private float TraverseMCCFRPruned(State gs, int traverser)
         {
             if (gs is TerminalState)
             {
                 return gs.GetReward(traverser);
             }
-            else if (!gs.IsPlayerInHand(traverser)) // we cant get the reward because this function is not implemented
+            else if (!gs.IsPlayerInHand(traverser))
             {
-                return -gs.bets[traverser]; // correct?
+                return -gs.bets[traverser];
             }
             else if (gs is ChanceState)
             {
-                // sample a from chance
                 return TraverseMCCFRPruned(gs.DoRandomAction(), traverser);
             }
             else if (gs.IsPlayerTurn(traverser))
             {
-                // according to supp. mat. page 3, we do full MCCFR on the last betting round, otherwise skip low regret
                 if (gs.bettingRound != 4)
                 {
-                    //Infoset of player i that corresponds to h
                     Infoset infoset = gs.GetInfoset();
                     float[] sigma = infoset.CalculateStrategy();
                     float expectedVal = 0.0f;
@@ -130,8 +244,6 @@ namespace Poker_MCCFRM
                 }
                 else
                 {
-                    // do the same as in normal MCCFR
-                    //Infoset of player i that corresponds to h
                     Infoset infoset = gs.GetInfoset();
                     float[] sigma = infoset.CalculateStrategy();
                     float expectedVal = 0.0f;
@@ -162,6 +274,7 @@ namespace Poker_MCCFRM
                 return TraverseMCCFRPruned(gs.children[randomIndex], traverser);
             }
         }
+        
         public void PlayOneGame()
         {
             ResetGame();
@@ -171,7 +284,6 @@ namespace Poker_MCCFRM
             {
                 if (gs is ChanceState)
                 {
-                    // sample a from chance
                     gs = gs.DoRandomAction();
 
                     Console.WriteLine();
@@ -220,6 +332,7 @@ namespace Poker_MCCFRM
             }
             Console.WriteLine();
         }
+        
         public float PlayOneGame_d(int mainPlayer, bool display)
         {
             ResetGame();
@@ -229,7 +342,6 @@ namespace Poker_MCCFRM
             {
                 if (gs is ChanceState)
                 {
-                    // sample a from chance
                     gs = gs.DoRandomAction();
 
                     if (display)
@@ -245,10 +357,8 @@ namespace Poker_MCCFRM
                             playerCards.Add(new Card(gs.playerCards[i].Item1));
                             playerCards.Add(new Card(gs.playerCards[i].Item2));
                             if (display)
-
                                 playerCards[0].PrintBeautifulString();
                             if (display)
-
                                 playerCards[1].PrintBeautifulString(" ");
                         }
                         first = false;
@@ -304,24 +414,23 @@ namespace Poker_MCCFRM
                 Console.WriteLine();
             return gs.GetReward(mainPlayer);
         }
+        
         private float TraverseMCCFR(State gs, int traverser, int iteration)
         {
             if (gs is TerminalState)
             {
                 return gs.GetReward(traverser);
             }
-            else if (!gs.IsPlayerInHand(traverser)) // we cant get the reward because this function is not implemented
+            else if (!gs.IsPlayerInHand(traverser))
             {
-                return -gs.bets[traverser]; // correct?
+                return -gs.bets[traverser];
             }
             else if (gs is ChanceState)
             {
-                // sample a from chance
                 return TraverseMCCFR(gs.DoRandomAction(), traverser, iteration);
             }
             else if (gs.IsPlayerTurn(traverser))
             {
-                //Infoset of player i that corresponds to h
                 Infoset infoset = gs.GetInfoset();
                 float[] sigma = infoset.CalculateStrategy();
                 float expectedVal = 0.0f;
@@ -351,6 +460,7 @@ namespace Poker_MCCFRM
                 return TraverseMCCFR(gs.children[randomIndex], traverser, iteration);
             }
         }
+        
         internal void TraverseMCCFRPruned()
         {
             throw new NotImplementedException();
@@ -405,7 +515,6 @@ namespace Poker_MCCFRM
                 {
                     PlayState ps = gs[j];
                     Infoset infoset = ps.GetInfoset();
-                    //List<float> sigma = infoset.CalculateStrategy();
                     float[] phi = infoset.GetFinalStrategy();
 
                     if (j % 13 == 0 && j + 1 < gs.Count)
@@ -444,12 +553,13 @@ namespace Poker_MCCFRM
                 Console.WriteLine();
             }
         }
+        
         public void PrintStatistics(long iterations)
         {
             ResetGame();
             List<PlayState> gs = ((ChanceState)rootState).GetFirstActionStates();
 
-            int maxOutput = -1; // todo
+            int maxOutput = -1;
             foreach (PlayState ps in gs)
             {
                 if (maxOutput < 0)
@@ -499,6 +609,7 @@ namespace Poker_MCCFRM
             Console.WriteLine("Number of infosets: " + Global.nodeMap.Count);
             Console.WriteLine("Number of training iterations: " + iterations);
         }
+        
         public void EnumerateActionSpace(State gs)
         {
             if (gs is TerminalState)
@@ -526,6 +637,7 @@ namespace Poker_MCCFRM
                 }
             }
         }
+        
         public void EnumerateActionSpace()
         {
             EnumerateActionSpace(rootState);

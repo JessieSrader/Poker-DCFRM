@@ -1,4 +1,4 @@
-﻿using System;
+﻿    using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
@@ -17,7 +17,7 @@ namespace Poker_MCCFRM
             CreateIndexers();
             Global.handEvaluator = new Evaluator();
             CalculateInformationAbstraction();
-            Train();
+            TrainDiscountedCFR();
         }
 
         private static void CreateIndexers()
@@ -50,40 +50,39 @@ namespace Poker_MCCFRM
             Global.indexer_2_3_1_1 = new HandIndexer(new int[4] { 2, 3, 1, 1 });
             Console.WriteLine(Global.indexer_2_3_1_1.roundSize[3] + " non-isomorphic hands found");
         }
+        
         private static void CalculateInformationAbstraction()
         {
             Console.WriteLine("Calculating information abstractions... ");
-
             OCHSTable.Init();
             EMDTable.Init();
         }
-        private static void Train()
+        
+        private static void TrainDiscountedCFR()
         {
-            Console.WriteLine("Starting Monte Carlo Counterfactual Regret Minimization (MCCFRM)...");
+            Console.WriteLine("Starting Discounted Counterfactual Regret Minimization (DCFR)...");
 
-            long StrategyInterval = Math.Max(1, 1000 / Global.NOF_THREADS); ; // bb rounds before updating player strategy (recursive through tree) 10k
-            long PruneThreshold = 20000000 / Global.NOF_THREADS; // bb rounds after this time we stop checking all actions, 200 minutes
-            long LCFRThreshold = 20000000 / Global.NOF_THREADS; // bb rounds when to stop discounting old regrets, no clue what it should be
-            long DiscountInterval = 1000000 / Global.NOF_THREADS; // bb rounds, discount values periodically but not every round, 10 minutes
+            long StrategyInterval = Math.Max(1, 1000 / Global.NOF_THREADS);
+            long StrategyDiscountInterval = 10000 / Global.NOF_THREADS; // Discount strategies every 10k iterations
             long SaveToDiskInterval = 1000000 / Global.NOF_THREADS;
             long testGamesInterval = 100000 / Global.NOF_THREADS;
 
             long sharedLoopCounter = 0;
 
             LoadFromFile();
-            LoadFromFile_d();
 
             Trainer trainer = new Trainer(0);
             trainer.EnumerateActionSpace();
 
             Stopwatch stopwatch = new Stopwatch();
             stopwatch.Start();
+            
             Parallel.For(0, Global.NOF_THREADS,
                 index =>
                 {
                     Trainer trainer = new Trainer(index);
 
-                    for (int t = 1; ; t++) // bb rounds
+                    for (int t = 1; ; t++)
                     {
                         if (t % 1000 == 0)
                         {
@@ -91,7 +90,7 @@ namespace Poker_MCCFRM
                             Console.WriteLine("Training steps " + sharedLoopCounter);
                         }
 
-                        if (t % testGamesInterval == 0 && index == 0) // implement progress bar later
+                        if (t % testGamesInterval == 0 && index == 0)
                         {
                             trainer.PrintStartingHandsChart();
                             trainer.PrintStatistics(sharedLoopCounter);
@@ -102,60 +101,36 @@ namespace Poker_MCCFRM
                                 trainer.PlayOneGame();
                             }
 
-                            //Console.WriteLine("Sample games (against baseline)");
-                            //float mainScore = 0.0f;
-                            //for (int x = 0; x < 100; x++) // 100 games not statistically significant
-                            //{
-                            //    if (x < 20)
-                            //    {
-                            //        mainScore += trainer.PlayOneGame_d(x % 2, true);
-                            //    }
-                            //    mainScore += trainer.PlayOneGame_d(x % 2, false);
-                            //}
-                            //WritePlotStatistics((mainScore / 10000) / Global.BB);
-                            //Console.WriteLine("BBs per hand: {0}", (mainScore / 10000) / Global.BB);
-
                             Console.WriteLine("Iterations per second: {0}", 1000 * sharedLoopCounter / (stopwatch.ElapsedMilliseconds + 1));
                             Console.WriteLine();
                         }
-                        for (int traverser = 0; traverser < Global.nofPlayers; traverser++) // traverser 
+                        
+                        for (int traverser = 0; traverser < Global.nofPlayers; traverser++)
                         {
                             if (t % StrategyInterval == 0 && index == 0)
                             {
                                 trainer.UpdateStrategy(traverser);
                             }
-                            if (t > PruneThreshold)
-                            {
-                                float q = RandomGen.NextFloat();
-                                if (q < 0.05)
-                                {
-                                    trainer.TraverseMCCFR(traverser, t);
-                                }
-                                else
-                                {
-                                    trainer.TraverseMCCFRPruned(traverser);
-                                }
-                            }
-                            else
-                            {
-                                trainer.TraverseMCCFR(traverser, t);
-                            }
+                            
+                            // Use Discounted CFR traversal
+                            trainer.TraverseDiscountedCFR(traverser, t);
                         }
-                        if (t % SaveToDiskInterval == 0 && index == 0) // allow only one thread to do saving
+                        
+                        // Apply strategy discounting periodically
+                        if (t % StrategyDiscountInterval == 0 && index == 0)
+                        {
+                            trainer.DiscountInfosetsStrategies(t);
+                        }
+                        
+                        if (t % SaveToDiskInterval == 0 && index == 0)
                         {
                             Console.WriteLine("Saving nodeMap to disk disabled!");
-                            //SaveToFile();
-                        }
-
-                        // discount all infosets (for all players)
-                        if (t < LCFRThreshold && t % DiscountInterval == 0 && index == 0) // allow only one thread to do discounting
-                        {
-                            float d = ((float)t / DiscountInterval) / ((float)t / DiscountInterval + 1);
-                            trainer.DiscountInfosets(d);
+                            SaveToFile();
                         }
                     }
                 });
         }
+        
         private static void WritePlotStatistics(float bbWins)
         {
             using (StreamWriter file = new StreamWriter("progress.txt", true))
@@ -163,51 +138,7 @@ namespace Poker_MCCFRM
                 file.WriteLine(Math.Round(bbWins, 2));
             }
         }
-        private static void SaveToFile_d()
-        {
-            Console.WriteLine("Saving dictionary to file {0}", "nodeMap_d.txt");
-
-            using FileStream fs = File.OpenWrite("nodeMap.txt");
-            using BinaryWriter writer = new BinaryWriter(fs);
-            foreach (var pair in Global.nodeMapBaseline)
-            {
-                byte[] bytes = Encoding.ASCII.GetBytes(pair.Key);
-
-                writer.Write(bytes.Length);
-                writer.Write(bytes);
-
-                bytes = SerializeToBytes(pair.Value);
-                writer.Write(bytes.Length);
-                writer.Write(bytes);
-            }
-        }
-        private static void LoadFromFile_d()
-        {
-            if (!File.Exists("nodeMap_d.txt"))
-                return;
-            Console.WriteLine("Loading nodes from file nodeMap_d.txt...");
-            using FileStream fs = File.OpenRead("nodeMap_d.txt");
-            using BinaryReader reader = new BinaryReader(fs);
-            Global.nodeMapBaseline = new ConcurrentDictionary<string, Infoset>();
-
-            try
-            {
-                while (true)
-                {
-                    int keyLength = reader.ReadInt32();
-                    byte[] key = reader.ReadBytes(keyLength);
-                    string keyString = Encoding.ASCII.GetString(key);
-                    int valueLength = reader.ReadInt32();
-                    byte[] value = reader.ReadBytes(valueLength);
-                    Infoset infoset = Deserialize(value);
-                    Global.nodeMapBaseline.TryAdd(keyString, infoset);
-                }
-            }
-            catch (EndOfStreamException e)
-            {
-                return;
-            }
-        }
+        
         private static void SaveToFile()
         {
             Console.WriteLine("Saving dictionary to file {0}", "nodeMap.txt");
@@ -221,8 +152,6 @@ namespace Poker_MCCFRM
                 writer.Write(bytes.Length);
                 writer.Write(bytes);
 
-                //bytes = SerializeToBytes(pair.Value);
-
                 writer.Write(pair.Value.actionCounter.Length);
                 for (int i = 0; i < pair.Value.actionCounter.Length; i++)
                     writer.Write(pair.Value.actionCounter[i]);
@@ -231,6 +160,7 @@ namespace Poker_MCCFRM
                     writer.Write(pair.Value.regret[i]);
             }
         }
+        
         private static void LoadFromFile()
         {
             if (!File.Exists("nodeMap.txt"))
@@ -266,6 +196,7 @@ namespace Poker_MCCFRM
                 return;
             }
         }
+        
         private static byte[] SerializeToBytes<T>(T item)
         {
             var formatter = new BinaryFormatter();
@@ -273,19 +204,6 @@ namespace Poker_MCCFRM
             formatter.Serialize(stream, item);
             stream.Seek(0, SeekOrigin.Begin);
             return stream.ToArray();
-        }
-        private static Infoset Deserialize(this byte[] byteArray)
-        {
-            if (byteArray == null)
-            {
-                return null;
-            }
-            using var memStream = new MemoryStream();
-            var binForm = new BinaryFormatter();
-            memStream.Write(byteArray, 0, byteArray.Length);
-            memStream.Seek(0, SeekOrigin.Begin);
-            Infoset obj = (Infoset)binForm.Deserialize(memStream);
-            return obj;
         }
     }
 }

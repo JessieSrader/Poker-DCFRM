@@ -23,6 +23,12 @@ namespace Poker_MCCFRM
         public const int BB = 2;
         public const int SB = 1;
 
+        // Discounted CFR parameters
+        public const float ALPHA = 1.5f;  // Positive regret discount factor
+        public const float BETA = 0.5f;   // Negative regret discount factor  
+        public const float GAMMA = 2.0f;  // Strategy discount factor
+        public const int T_DISCOUNT = 100; // Start discounting after this many iterations
+
         // information abstraction parameters, currently this would be a
         // 169 - 200 - 200 - 200 abstraction, where the river is bucketed using OCHS and the turn and flop using EMD
         public const int nofRiverBuckets = 1000;
