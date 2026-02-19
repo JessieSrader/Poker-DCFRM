@@ -9,7 +9,7 @@ namespace Poker_MCCFRM
     public static class Global
     {
         // adjust threads to cpu
-        public const int NOF_THREADS = 20;
+        public const int NOF_THREADS = 12;
 
         // currently each round has the same raise values available
         // the values are multiples of the current pot
@@ -55,18 +55,9 @@ namespace Poker_MCCFRM
         public static HandIndexer indexer_2_5_2;
         public static Evaluator handEvaluator;
 
-        // Replace ConcurrentDictionary with FASTER
-        public static FasterNodeStore nodeStore;
-        
-        // Keep a small in-memory cache for hot paths
-        public static ConcurrentDictionary<string, Infoset> nodeCache = 
-            new ConcurrentDictionary<string, Infoset>(NOF_THREADS, 100000);
+        public static ConcurrentDictionary<string, Infoset> nodeMap = new ConcurrentDictionary<string, Infoset>(Global.NOF_THREADS, 1000000);
+        public static ConcurrentDictionary<string, Infoset> nodeMapBaseline = new ConcurrentDictionary<string, Infoset>(Global.NOF_THREADS, 1000000);
 
         public static ThreadLocal<Deck> Deck = new ThreadLocal<Deck>(() => new Deck());
-        
-        public static void InitializeFaster()
-        {
-            nodeStore = new FasterNodeStore("checkpoints");
-        }
     }
 }
